@@ -1,0 +1,9 @@
+{
+    "include": [ "./**/*.ts" ],
+    "compilerOptions": {
+        "target": "es2016",
+        "module": "CommonJS",
+        "strict": true,
+        "outDir": "dist",
+    },
+}

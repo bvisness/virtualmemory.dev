@@ -1,31 +1,31 @@
 // Types for the user program
 
-interface Memset {
+export interface Memset {
     type: "memset";
     base: number;
     value: number;
     length: number;
 }
 
-interface WinReservation {
+export interface WinReservation {
     base: number;
     length: number;
 }
 
-enum WinPageState {
+export enum WinPageState {
     Free = "free",
     Reserved = "reserved",
     Committed = "committed",
 }
 
-enum WinAllocationType {
+export enum WinAllocationType {
     MEM_COMMIT = 0x00001000,
     MEM_RESERVE = 0x00002000,
     MEM_RESET = 0x00080000,
     MEM_RESET_UNDO = 0x1000000,
 }
 
-enum WinProtect {
+export enum WinProtect {
     PAGE_EXECUTE = 0x10,
     PAGE_EXECUTE_READ = 0x20,
     PAGE_EXECUTE_READWRITE = 0x40,
@@ -40,7 +40,7 @@ enum WinProtect {
     PAGE_WRITECOMBINE = 0x400,
 }
 
-enum WinFreeType {
+export enum WinFreeType {
     MEM_DECOMMIT = 0x00004000,
     MEM_RELEASE = 0x00008000,
 
@@ -53,9 +53,9 @@ enum WinFreeType {
  * Calls that are available on all platforms. Note that these might not
  * _behave_ the same on all platforms, but at least they exist everywhere.
  */
-type CommonCall = Memset;
+export type CommonCall = Memset;
 
-interface WinVirtualAlloc {
+export interface WinVirtualAlloc {
     type: "VirtualAlloc";
     lpAddress: number;
     dwSize: number;
@@ -63,16 +63,16 @@ interface WinVirtualAlloc {
     flProtect: WinProtect;
 }
 
-interface WinVirtualFree {
+export interface WinVirtualFree {
     type: "VirtualFree";
     lpAddress: number;
     dwSize: number;
     dwFreeType: WinFreeType;
 }
 
-type WinCall = CommonCall | WinVirtualAlloc | WinVirtualFree;
+export type WinCall = CommonCall | WinVirtualAlloc | WinVirtualFree;
 
-interface WinPage {
+export interface WinPage {
     state: WinPageState;
     protection: WinProtect;
 }
@@ -82,7 +82,7 @@ const defaultWinPage: WinPage = {
     protection: WinProtect.PAGE_NOACCESS,
 };
 
-class WinMemory {
+export class WinMemory {
     mem: number[];
     pageSize: number;
     reservations: WinReservation[];
@@ -100,14 +100,28 @@ class WinMemory {
         const pageBase = Math.floor(addr / this.pageSize) * this.pageSize;
         return this.pages.get(pageBase) ?? defaultWinPage;
     }
+
+    write(addr: number, value: number) {
+        const page = this.pageForAddr(addr);
+        if (page.state !== WinPageState.Committed) {
+            throw new Error(`SEGFAULT: page for address ${addr} was not committed`);
+        }
+
+        const writableProtections = [WinProtect.PAGE_READWRITE, WinProtect.PAGE_EXECUTE_READWRITE]; // TODO: copy-on-write stuff
+        if (!writableProtections.includes(page.protection)) {
+            throw new Error(`SEGFAULT: page for address ${addr} is not writable`);
+        }
+
+        this.mem[addr] = value;
+    }
 }
 
-interface Instruction {
+export interface Instruction {
     winCall?: WinCall;
     // TODO: Mac and Linux calls.
 }
 
-interface Program {
+export interface Program {
     instrs: Instruction[];
 }
 
@@ -115,7 +129,7 @@ function assertUnreachable(_: never): never {
     throw new Error("This was supposed to be unreachable >:(");
 }
 
-function runProgramWin(p: Program) {
+export function runProgramWin(p: Program) {
     const m = new WinMemory(16);
 
     for (const inst of p.instrs) {
@@ -133,12 +147,7 @@ function runProgramWin(p: Program) {
             } break;
             case "memset": {
                 for (let i = 0; i < call.length; i++) {
-                    const addr = call.base + i;
-                    const page = m.pageForAddr(addr);
-                    if (page.state !== WinPageState.Committed) {
-                        throw new Error(`SEGFAULT: page for address ${addr} was not committed`);
-                    }
-                    m.mem[addr] = call.value % 256;
+                    m.write(call.base + i, call.value % 256);
                 }
             } break;
             default: {

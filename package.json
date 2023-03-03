@@ -4,9 +4,12 @@
     "serve": "node scripts/build.mjs --serve",
     "check": "tsc",
     "watch": "tsc --watch",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "tsc --project test && node test/dist/test/test.js",
+    "test-bun": "bun run test/test.ts"
   },
   "devDependencies": {
+    "@types/node": "^18.14.5",
     "@typescript-eslint/eslint-plugin": "^5.51.0",
     "@typescript-eslint/parser": "^5.51.0",
     "esbuild": "0.17.6",
