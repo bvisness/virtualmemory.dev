@@ -1,5 +1,19 @@
 // Types for the user program
 
+const KiB = 1024;
+
+function assertUnreachable(_: never): never {
+    throw new Error("This was supposed to be unreachable >:(");
+}
+
+function roundDownTo(n: number, to: number) {
+    return Math.floor(n / to) * to;
+}
+
+function roundUpTo(n: number, to: number) {
+    return Math.ceil(n / to) * to;
+}
+
 export interface Memset {
     type: "memset";
     base: number;
@@ -73,11 +87,12 @@ export interface WinVirtualFree {
 export type WinCall = CommonCall | WinVirtualAlloc | WinVirtualFree;
 
 export interface WinPage {
+    baseAddr: number;
     state: WinPageState;
     protection: WinProtect;
 }
 
-const defaultWinPage: WinPage = {
+const defaultWinPage = {
     state: WinPageState.Free,
     protection: WinProtect.PAGE_NOACCESS,
 };
@@ -85,20 +100,34 @@ const defaultWinPage: WinPage = {
 export class WinMemory {
     mem: number[];
     pageSize: number;
+    allocationGranularity: number;
     reservations: WinReservation[];
     pages: Map<number, WinPage>; // indexed by base address
 
     constructor(numPages: number) {
-        const pageSize = 4096; // hardcoded for now
+        const pageSize = 4 * KiB; // hardcoded for now
         this.mem = Array<number>(pageSize * numPages).fill(0),
         this.pageSize = pageSize;
+        this.allocationGranularity = 64 * KiB; // hardcoded for now
         this.reservations = [];
         this.pages = new Map();
     }
 
     pageForAddr(addr: number): WinPage {
-        const pageBase = Math.floor(addr / this.pageSize) * this.pageSize;
-        return this.pages.get(pageBase) ?? defaultWinPage;
+        return this.pagesForRange(addr, 0)[0];
+    }
+
+    pagesForRange(base: number, length: number): WinPage[] {
+        const start = roundDownTo(base, this.pageSize);
+        const end = roundUpTo(base + length, this.pageSize);
+        const res: WinPage[] = [];
+        for (let addr = start; addr < end; addr += this.pageSize) {
+            res.push(this.pages.get(addr) ?? {
+                baseAddr: addr,
+                ...defaultWinPage,
+            });
+        }
+        return res;
     }
 
     write(addr: number, value: number) {
@@ -114,6 +143,70 @@ export class WinMemory {
 
         this.mem[addr] = value;
     }
+
+    VirtualAlloc(
+        lpAddress: number,
+        dwSize: number,
+        flAllocationType: WinAllocationType,
+        flProtect: WinProtect,
+    ): number {
+        if (lpAddress === 0) {
+            throw new Error("VirtualAlloc: lpAddress of NULL is not supported yet");
+        }
+
+        if (lpAddress === 0) {
+            dwSize = roundUpTo(dwSize, this.pageSize);
+        }
+        if (flAllocationType & WinAllocationType.MEM_RESERVE) {
+            lpAddress = roundDownTo(lpAddress, this.allocationGranularity);
+        }
+        if (flAllocationType & WinAllocationType.MEM_COMMIT) {
+            lpAddress = roundDownTo(lpAddress, this.pageSize);
+        }
+        // TODO: What is the behavior when rounding down lpAddress? Does the function succeed but return the rounded-down value?
+
+        // Validate the operation first, before touching memory
+        if (flAllocationType & WinAllocationType.MEM_RESERVE) {
+            // Ensure that all pages being reserved are free
+            for (const page of this.pagesForRange(lpAddress, dwSize)) {
+                if (page.state !== WinPageState.Free) {
+                    throw new Error(`VirtualAlloc: MEM_RESERVE can only reserve free pages, but the page at address ${page.baseAddr} was ${page.state}`);
+                }
+            }
+        }
+        if (flAllocationType & WinAllocationType.MEM_COMMIT) {
+            // TODO: I know we can commit pages that are already committed, but what if the protection values don't agree?
+        }
+
+        // Reserve pages
+        if (flAllocationType & WinAllocationType.MEM_RESERVE) {
+            for (const page of this.pagesForRange(lpAddress, dwSize)) {
+                this.pages.set(page.baseAddr, {
+                    ...page,
+                    state: WinPageState.Reserved,
+                });
+            }
+            this.reservations.push({
+                base: lpAddress,
+                length: dwSize,
+            });
+            console.log("Reserved", lpAddress, dwSize);
+        }
+
+        // Commit pages
+        if (flAllocationType & WinAllocationType.MEM_COMMIT) {
+            for (const page of this.pagesForRange(lpAddress, dwSize)) {
+                this.pages.set(page.baseAddr, {
+                    ...page,
+                    state: WinPageState.Committed,
+                    protection: flProtect,
+                });
+            }
+            console.log("Committed", lpAddress, dwSize);
+        }
+
+        return lpAddress;
+    }
 }
 
 export interface Instruction {
@@ -123,10 +216,6 @@ export interface Instruction {
 
 export interface Program {
     instrs: Instruction[];
-}
-
-function assertUnreachable(_: never): never {
-    throw new Error("This was supposed to be unreachable >:(");
 }
 
 export function runProgramWin(p: Program) {
@@ -140,7 +229,7 @@ export function runProgramWin(p: Program) {
 
         switch (call.type) {
             case "VirtualAlloc": {
-                console.log("u haz");
+                m.VirtualAlloc(call.lpAddress, call.dwSize, call.flAllocationType, call.flProtect);
             } break;
             case "VirtualFree": {
                 console.log("freedom!!");
